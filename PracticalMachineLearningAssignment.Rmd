@@ -1,0 +1,90 @@
+---
+title: "Practical Machine Learning"
+author: "Graeme Smith"
+date: "Saturday, October 25, 2014"
+output: html_document
+---
+
+The objective of this project is to classify barbell lift exercises performed by 6 volenteers based various accelerometer data.  One of the exercises was performed correctly and 5 other incorrect techniques were used.
+
+```{r echo=FALSE, message=FALSE}
+setwd("~/GitHub/PracticalMachineLearning")
+
+require(caret)
+````
+
+```{r echo=FALSE, cache=TRUE, message=FALSE, warning=FALSE}
+if (!file.exists("pml-training.csv"))
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv")
+
+fullTraining <- read.csv("pml-training.csv", stringsAsFactors=F)
+
+set.seed(123)
+validation <- createDataPartition(y=fullTraining$classe, p=0.1, list=F)
+
+classification <- data.frame(classe=as.factor(fullTraining$classe[-validation]))
+for(classe in levels(classification$classe))
+  classification[,classe] = classification$classe == classe
+
+validationClassification <- data.frame(classe=as.factor(fullTraining$classe[validation]))
+for(classe in levels(validationClassification$classe))
+  validationClassification[,classe] = validationClassification$classe == classe
+
+training <- fullTraining[-validation,8:(ncol(fullTraining)-1)]
+validationSet <- fullTraining[validation,8:(ncol(fullTraining)-1)]
+for (i in 1:ncol(training)) {
+  training[, i] <- as.numeric(training[, i])
+  validationSet[, i] <- as.numeric(validationSet[, i])
+}
+```
+
+The measurements seemed to fall under two categories, 52 of which contained a value for every row, and then around about 100 other measurements that only applied to a limited number of rows.  Only the 52 measurements that had values for each row were kept.  The measurements were initially pre-processed by centering and scaling them, and by having a Yeo-Johnson transformation applied to them to reduce skew and kurtosis.  Some outliers still existed after the Yeo-Johnson transformation.  Any z-value greater than 3 or less than -3 was modified to these values to remove the outliers.  I also kept about 10% of the data separate as a validation set.
+
+```{r, echo=FALSE, cache=TRUE, message=FALSE}
+require(moments)
+
+includeColumns <- which(sapply(training, function(x) { mean(!is.na(x)) >= 0.99 & sd(x, na.rm=T) > 0 }, simplify=T))
+
+scaleYJ <- preProcess(training[, includeColumns], method=c("center", "scale", "YeoJohnson"))
+
+trainingStd <- predict(scaleYJ, training[, includeColumns])
+validationStd <- predict(scaleYJ, validationSet[, includeColumns])
+
+kurt <- sapply(trainingStd, function(x) { kurtosis(x, na.rm=T)}, simplify=T)
+skew <- sapply(trainingStd, function(x) { skewness(x, na.rm=T)}, simplify=T)
+sd <- sapply(trainingStd, function(x) { sd(x, na.rm=T)}, simplify=T)
+mean <- sapply(trainingStd, function(x) { mean(x, na.rm=T)}, simplify=T)
+
+for (i in 1:ncol(trainingStd)) {
+  trainingStd[!is.na(trainingStd[, i]) & abs(trainingStd[, i])>3, i] <- 3 * sign(trainingStd[!is.na(trainingStd[, i]) & abs(trainingStd[, i])>3, i])
+  validationStd[!is.na(validationStd[, i]) & abs(validationStd[, i])>3, i] <- 3 * sign(validationStd[!is.na(validationStd[, i]) & abs(validationStd[, i])>3, i])
+}
+```
+
+After investigating several other algorithms I chose to use the random forest algorithm to train the model.  I used default paremters, except 10 fold cross validation was passed as the trControl parameters.  Initially PCA was used to restrict the training data to it's most significant principal components.  However, when tested on other algorithms these principal components performed far worse than the standardised measurements did, and so where not used for the random forest algorithm.
+
+```{r, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+require(caret)
+
+set.seed(123)
+
+tc <- trainControl("cv", 10, savePredictions=T)
+
+rfModel <- train(classification$classe ~ ., data=trainingStd, method="rf", trControl=tc)
+
+validationPrediction <- predict(rfModel, validationStd)
+```
+
+When the random forest algorithm was run, the estimate of the out of sample error rate, using the cross validation, was 0.45%.  The confusion matrix was as follows :
+
+```{r, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE, results='asis'}
+require(xtable)
+print(xtable(as.data.frame(rfModel$finalModel$confusion), caption="Confusion Matrix for training set", digits=c(0,0,0,0,0,0,3)), comment=F, type="html")
+```
+   
+The estimate of only 0.45% error rate with random forests seemed extraodinarily accurate compared to other methods I had tried.  However running the model on the out of sample validation set also seemed to confirm the models cross-validation predicted accuracy with `r sprintf("%1.2f%%", 100*confusionMatrix(validationPrediction, validationClassification$classe)$overall["Accuracy"])` accuracy.  The confusion matrix was as follows :
+
+```{r, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE, results='asis'}
+require(xtable)
+print(xtable(confusionMatrix(validationPrediction, validationClassification$classe)$table, caption="Confusion Matrix for validation set"), comment=F, type="html")
+```
